@@ -8,6 +8,7 @@ import re
 import os
 import random
 from datetime import datetime, timedelta
+from functools import wraps
 from document_generator import (
     generate_faculty_id, 
     generate_pay_stub, 
@@ -22,6 +23,10 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 SHEERID_BASE_URL = "https://services.sheerid.com"
 ORGSEARCH_URL = "https://orgsearch.sheerid.net/rest/organization/search"
 
+# Whitelist User IDs - Ambil dari environment variable
+ALLOWED_USER_IDS_STR = os.environ.get('ALLOWED_USER_IDS', '')
+ALLOWED_USER_IDS = [int(uid.strip()) for uid in ALLOWED_USER_IDS_STR.split(',') if uid.strip()]
+
 # States untuk ConversationHandler
 NAME, EMAIL, SCHOOL, SHEERID_URL = range(4)
 
@@ -29,13 +34,88 @@ NAME, EMAIL, SCHOOL, SHEERID_URL = range(4)
 user_data = {}
 
 # =====================================================
+# ACCESS CONTROL DECORATOR
+# =====================================================
+
+def restricted(func):
+    """Decorator untuk membatasi akses hanya untuk authorized users"""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+        first_name = update.effective_user.first_name or "User"
+        
+        if not ALLOWED_USER_IDS:
+            # Jika whitelist kosong, tampilkan warning
+            await update.message.reply_text(
+                "⚠️ *Bot Configuration Error*\n\n"
+                "No authorized users configured.\n"
+                "Please contact bot administrator.",
+                parse_mode='Markdown'
+            )
+            print(f"⚠️ WARNING: ALLOWED_USER_IDS not configured!")
+            return ConversationHandler.END
+        
+        if user_id not in ALLOWED_USER_IDS:
+            await update.message.reply_text(
+                "🚫 *Access Denied*\n\n"
+                "You are not authorized to use this bot.\n\n"
+                f"👤 Name: {first_name}\n"
+                f"🆔 Your Telegram ID: `{user_id}`\n"
+                f"📛 Username: @{username}\n\n"
+                "Please contact the bot owner to request access.",
+                parse_mode='Markdown'
+            )
+            print(f"❌ Unauthorized access attempt:")
+            print(f"   User ID: {user_id}")
+            print(f"   Username: @{username}")
+            print(f"   Name: {first_name}")
+            return ConversationHandler.END
+        
+        # User authorized - proceed
+        print(f"✅ Authorized user: {user_id} (@{username})")
+        return await func(update, context, *args, **kwargs)
+    
+    return wrapped
+
+def restricted_callback(func):
+    """Decorator untuk membatasi akses pada callback queries"""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        query = update.callback_query
+        user_id = update.effective_user.id
+        
+        if user_id not in ALLOWED_USER_IDS:
+            await query.answer("🚫 Access Denied", show_alert=True)
+            await query.edit_message_text(
+                "🚫 *Access Denied*\n\n"
+                f"Your ID: `{user_id}`",
+                parse_mode='Markdown'
+            )
+            print(f"❌ Unauthorized callback from user: {user_id}")
+            return
+        
+        return await func(update, context, *args, **kwargs)
+    
+    return wrapped
+
+# =====================================================
 # CONVERSATION HANDLERS
 # =====================================================
 
+@restricted
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /start"""
+    user_id = update.effective_user.id
+    first_name = update.effective_user.first_name
+    
+    print(f"\n{'='*60}")
+    print(f"🎯 New session started by: {first_name} (ID: {user_id})")
+    print(f"{'='*60}\n")
+    
     await update.message.reply_text(
-        "🎓 *K12 Teacher Verification Bot*\n\n"
+        f"🎓 *K12 Teacher Verification Bot*\n\n"
+        f"Welcome, {first_name}! 👋\n\n"
         "Send your SheerID verification URL:\n\n"
         "`https://services.sheerid.com/verify/.../verificationId=...`\n\n"
         "Example:\n"
@@ -268,6 +348,7 @@ async def display_schools(update, schools, user_id):
 # BUTTON CALLBACK HANDLER
 # =====================================================
 
+@restricted_callback
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle school selection dari inline button"""
     query = update.callback_query
@@ -539,6 +620,7 @@ async def submit_sheerid(
 # CANCEL HANDLER
 # =====================================================
 
+@restricted
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk /cancel command"""
     user_id = update.effective_user.id
@@ -573,6 +655,16 @@ def main():
     print(f"Bot Token: {BOT_TOKEN[:10]}...{BOT_TOKEN[-5:]}")
     print(f"SheerID URL: {SHEERID_BASE_URL}")
     print(f"Org Search URL: {ORGSEARCH_URL}")
+    
+    # Display authorized users
+    if ALLOWED_USER_IDS:
+        print(f"✅ Authorized Users: {len(ALLOWED_USER_IDS)} user(s)")
+        for uid in ALLOWED_USER_IDS:
+            print(f"   - User ID: {uid}")
+    else:
+        print("⚠️ WARNING: No authorized users configured!")
+        print("   Set ALLOWED_USER_IDS environment variable")
+    
     print("="*60 + "\n")
 
     # Build application
